@@ -50,6 +50,9 @@ class StringCurrency(types.TypeDecorator):
         return Decimal(value)
 
 
+# ======================================================================
+
+
 class User(Base):
     __tablename__ = 'users'
 
