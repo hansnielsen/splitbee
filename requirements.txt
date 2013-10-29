@@ -1,10 +1,12 @@
+Baker==1.3
+Cython==0.19.2
 Pillow==2.2.1
 SQLAlchemy==0.8.2
-bottle==0.11.6
+falcon==0.1.7
 gevent==0.13.8
 greenlet==0.4.1
 pyOpenSSL==0.13.1
+python-mimeparse==0.1.4
 qrcode==4.0.1
 requests==2.0.0
 six==1.4.1
-bottle-sqlalchemy==0.4

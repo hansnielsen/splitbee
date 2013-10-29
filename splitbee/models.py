@@ -22,6 +22,8 @@ Base = declarative_base()
 Session = sessionmaker()
 
 
+# The default alphabet is all letters and digits, but with some confusing
+# duplicate-looking letters removed (see below for the whole list).
 ID_TRANSLATION = ''.join([chr(x) for x in range(256)])
 DEFAULT_ALPHABET = (string.ascii_letters + string.digits).translate(
     ID_TRANSLATION,
