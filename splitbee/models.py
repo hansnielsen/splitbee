@@ -1,72 +1,31 @@
 import string
 import random
 from decimal import Decimal
+from datetime import datetime
 
-from sqlalchemy import (
-    create_engine,
-    Column,
-    ForeignKey,
-    Integer,
-    Sequence,
-    String,
-    Table,
-)
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker, relationship, backref
-from sqlalchemy.exc import SQLAlchemyError
-from sqlalchemy import types
+import peewee
+from peewee import *
+from playhouse.proxy import Proxy
 
 from .config import DEBUG
-
-Base = declarative_base()
-Session = sessionmaker()
+from .util import gen_random
 
 
-# The default alphabet is all letters and digits, but with some confusing
-# duplicate-looking letters removed (see below for the whole list).
-ID_TRANSLATION = ''.join([chr(x) for x in range(256)])
-DEFAULT_ALPHABET = (string.ascii_letters + string.digits).translate(
-    ID_TRANSLATION,
-    'oO0Il1'
-)
-def gen_random(length, alphabet=DEFAULT_ALPHABET):
-    return ''.join(random.choice(alphabet) for x in range(length))
+database_proxy = Proxy()
 
 
-class StringCurrency(types.TypeDecorator):
-    precision = Decimal('0.01')
-    impl = types.String
-
-    def load_dialect_impl(self, dialect):
-        return dialect.type_descriptor(types.VARCHAR(100))
-
-    def process_bind_param(self, value, dialect):
-        if isinstance(value, float):
-            value = Decimal(value)
-
-        return str(value.quantize(self.precision))
-
-    def process_result_value(self, value, dialect):
-        return Decimal(value)
+class SplitbeeModel(Model):
+    class Meta:
+        database = database_proxy
 
 
-# ======================================================================
-
-
-class User(Base):
-    __tablename__ = 'users'
-
-    id = Column(Integer, primary_key=True)
-    email = Column(String)
-    # auth
+class User(SplitbeeModel):
+    id = PrimaryKeyField()
+    email = CharField(null=False)
+    password = CharField(null=False)
 
     # Optional name
-    name = Column(String, nullable=True)
-
-    def __init__(self, email, password, name=None):
-        self.email = email
-        #self.password = password
-        self.name = name
+    name = CharField(null=True)
 
     @property
     def total_owing(self):
@@ -75,7 +34,7 @@ class User(Base):
         if all bills were split perfectly and they paid for their entire share.
         """
         # TODO: this should use sql, not sum here
-        return sum(x.amount_paid for x in self.paid_components)
+        return sum(x.amount for x in self.paid_components)
 
     @property
     def total_paid(self):
@@ -85,74 +44,55 @@ class User(Base):
         # TODO: this should use sql, not sum here
         return 0
 
-    def __repr__(self):
-        return "<User(%d, '%s')>" % (self.id, self.name)
+
+class Token(SplitbeeModel):
+    """
+    This class represents tokens that can be used to authenticate as a user.
+    Each token will be valid for a certain period of time after the issuing
+    date, which is stored in the token.
+    """
+    id = CharField(primary_key=True)
+    user = ForeignKeyField(User, related_name='tokens')
+    timestamp = DateTimeField(null=False)
 
 
-class Bill(Base):
+class Bill(SplitbeeModel):
     """
     A single bill, representing some amount of money that was paid and needs
     to be split among multiple people.
     """
-    __tablename__ = 'bills'
-
     # NOTE: This ID can't be an integer, since it will be displayed to end-
     # users and used to look up bills.  We make it a random string do
     # dissuade brute-forcing.
-    id = Column(String(8), primary_key=True)
-    description = Column(String(140), nullable=False)
-
-    # ID of the payer.  NULL means "not yet paid"
-    payer_id = Column(Integer, ForeignKey('users.id'))
-
-    def __init__(self, description=""):
-        self.id = gen_random(8)
-        self.description = description
+    id = CharField(max_length=8, primary_key=True)
+    description = CharField(max_length=140, null=False)
+    payer = ForeignKeyField(User, null=True, related_name='bills_paid')
 
     @property
     def is_paid(self):
-        return self.payer_id is not None
-
-    @property
-    def total_amount(self):
-        # TODO: this should use sql, not sum here
-        return sum(x.amount_paid for x in self.bill_components)
-
-    def __repr__(self):
-        return "<Bill(id=%d, total_amount='%s')>" % (self.id,
-                                                     self.total_amount)
+        return self.payer is not None
 
 
-class BillComponent(Base):
+class BillComponent(SplitbeeModel):
     """
     A component of a bill that is owned by a certain user.
     """
-    __tablename__ = 'bill_components'
-    user_id = Column(Integer, ForeignKey('users.id'), primary_key=True)
-    bill_id = Column(Integer, ForeignKey('bills.id'), primary_key=True)
+    user = ForeignKeyField(User)
+    bill = ForeignKeyField(Bill)
+    amount = DecimalField(decimal_places=2, null=False)
 
-    amount_paid = Column(StringCurrency, nullable=False)
-
-    # Bidirectional relationship to User
-    payer = relationship(User,
-                backref=backref("paid_components",
-                                cascade="all, delete-orphan")
-                )
-
-    # Reference to bill
-    bill = relationship(Bill, backref=backref("bill_components",
-                                              cascade="all, delete-orphan"))
-
-    def __init__(self, bill, payer, amount):
-        self.bill = bill
-        self.payer = payer
-        self.amount_paid = amount
+    # TODO: make user/bill primary keys
 
 
-def bind_db(conn_str, create=False):
-    engine = create_engine(conn_str)
-    Session.configure(bind=engine)
-    if create:
-        Base.metadata.create_all(engine)
+ALL_MODELS = (User, Token, Bill, BillComponent)
 
-    return engine
+
+def bind_db(db):
+    database_proxy.initialize(db)
+    return database_proxy
+
+def create_tables():
+    peewee.create_model_tables(ALL_MODELS)
+
+def drop_tables():
+    peewee.drop_model_tables(ALL_MODELS)

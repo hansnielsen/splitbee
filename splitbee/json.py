@@ -2,6 +2,7 @@ from __future__ import absolute_import
 
 import re
 import json
+import falcon
 
 from . import config
 
@@ -13,7 +14,12 @@ else:
     def dumps(d):
         return json_escape(json.dumps(d))
 
-loads = json.loads
+def loads(s):
+    try:
+        return json.loads(s)
+    except ValueError:
+        raise falcon.HTTPBadRequest('Invalid JSON',
+                                    'Invalid JSON provided')
 
 
 ESCAPE_RE = re.compile(r'[<>/]')
