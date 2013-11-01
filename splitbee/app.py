@@ -3,7 +3,9 @@ import six
 import bcrypt
 import falcon
 import requests
+from functools import wraps
 from datetime import datetime
+from voluptuous import Schema, MultipleInvalid
 
 from . import json
 from . import models
@@ -21,13 +23,30 @@ def auth(req, resp, params):
         return
 
     # Check the auth token.
-    token = req.get_header('X-Auth-Token')
-    if token is None:
+    token_given = req.get_header('X-Auth-Token')
+    if token_given is None:
         raise falcon.HTTPUnauthorized('Auth token required',
-                                      'Please provide an auth token as part of '
-                                      'the request.')
+                                      'Please provide a valid auth token as '
+                                      'part of the request.')
 
-    # Set some sort of user parameter here.
+    # Fetch the token.
+    try:
+        token = models.Token.get(models.Token.id == token_given)
+    except models.Token.DoesNotExist:
+        raise falcon.HTTPUnauthorized('Auth token required',
+                                      'Please provide a valid auth token as '
+                                      'part of the request.')
+
+    # Validate the timestamp on the token.  Note that we can provide a 'real'
+    # error message here, as opposed to the above, since it should be hard for
+    # a malicious user to obtain any token, even an expired one.
+    time_diff = (datetime.utcnow() - token.timestamp).total_seconds()
+    if time_diff > 1 * 60 * 60:
+        raise falcon.HTTPUnauthorized('Auth token required',
+                                      'Token has expired.')
+
+    # We save the user model for use in the request handler.
+    req.env['splitbee.user'] = token.user
 
 
 def check_media_type(req, resp, params):
@@ -41,6 +60,48 @@ def set_headers(req, resp, params):
     # TODO: set headers for CORS?
     req.set_header('X-UA-Compatible', 'IE=Edge')
     pass
+
+
+def with_schema(*args, **kwargs):
+    """
+    This decorator makes writing functions that just load JSON, validate the
+    contents, and then do something easier.  It will effectively::
+        1. Load the request's body as JSON.
+        2. Validate the JSON according to the given schema
+        3. Call the original function with an additional keyword argument of
+           'body', set to the parsed and validated JSON.
+    """
+    # Require everything.
+    kwargs['required'] = True
+    schema = Schema(*args, **kwargs)
+
+    def decorator(func):
+        @wraps(func)
+        def wrapped(self, req, resp, *args, **kwargs):
+            # Load the body as JSON.
+            try:
+                params = json.loads(req.stream.read())
+            except ValueError:
+                raise falcon.HTTPBadRequest('Invalid JSON',
+                                            'Could not deserialize the request'
+                                            ' body as JSON')
+
+            # Validate it.
+            try:
+                validated = schema(params)
+            except MultipleInvalid as e:
+                raise falcon.HTTPBadRequest(
+                    'Invalid argument(s)',
+                    str(e)
+                )
+
+            # Call the original function
+            kwargs['body'] = validated
+            return func(self, req, resp, *args, **kwargs)
+
+        return wrapped
+
+    return decorator
 
 
 class BaseResource(object):
@@ -60,18 +121,13 @@ def constant_compare(x, y):
 
 
 class AuthenticateRoute(BaseResource):
-    def on_post(self, req, resp):
-        params = json.loads(req.stream.read())
-
-        user_given = params.get('user')
-        if user_given is None:
-            raise falcon.HTTPBadRequest('Missing input parameter',
-                                        'The "user" parameter is required.')
-
-        password = params.get('password')
-        if password is None:
-            raise falcon.HTTPBadRequest('Missing input parameter',
-                                        'The "password" parameter is required.')
+    @with_schema({
+        'user': six.string_types[0],
+        'password': six.string_types[0],
+    })
+    def on_post(self, req, resp, body):
+        user_given = body['user']
+        password = body['password']
         if isinstance(password, six.text_type):
             password = password.encode('utf-8')
 
@@ -81,7 +137,7 @@ class AuthenticateRoute(BaseResource):
             raise falcon.HTTPBadRequest('Bad username or password',
                                         'A bad username or password was given.')
 
-        # Hash the password - need to use constant-time compare here.
+        # Hash and compare password - need to use constant-time compare here.
         res = bcrypt.hashpw(password, user.password.encode('utf-8'))
         if not constant_compare(res, user.password):
             raise falcon.HTTPBadRequest('Bad username or password',
@@ -102,9 +158,14 @@ class AuthenticateRoute(BaseResource):
 
 
 class BillResource(BaseResource):
-    def on_post(self, req, resp):
+    @with_schema({
+    })
+    def on_post(self, req, resp, body):
         resp.status = falcon.HTTP_200
-        resp.body = json.dumps({'id': 'foo'})
+        resp.body = json.dumps({
+            'user_id': req.env['splitbee.user'].id,
+            'user_email': req.env['splitbee.user'].email,
+        })
 
 
 class BillInfoResource(BaseResource):

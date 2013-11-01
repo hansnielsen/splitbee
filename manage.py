@@ -73,7 +73,8 @@ def get_tokens(email):
     user = User.get(User.email == email)
 
     print("Tokens for user '%s' (ID = %d):" % (email, user.id))
-    for token in Token.select().where(Token.user == user):
+    for token in Token.select().where(Token.user == user).\
+                 order_by(Token.timestamp.desc()):
         print('\t%s - created at %s (%d seconds ago)' % (
             token.id,
             token.timestamp.strftime("%Y-%m-%d %H:%M:%S UTC"),
